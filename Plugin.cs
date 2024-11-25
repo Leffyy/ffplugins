@@ -1,84 +1,242 @@
-﻿using Dalamud.Game.ClientState;
-using Dalamud.Game.Command;
+﻿using Dalamud.Plugin;
+using Dalamud.Game.ClientState;
 using Dalamud.Game.Gui;
-using Dalamud.Interface.Windowing;
+using Dalamud.Game;
+using Dalamud.Lua;
 using Dalamud.Logging;
-using Dalamud.Plugin;
-using DalamudPluginProjectTemplate.Attributes;
 using System;
+using System.Linq;
+using System.Threading.Tasks;
 
-namespace DalamudPluginProjectTemplate
+public class AutoRepairPlugin : IDalamudPlugin
 {
-    public class Plugin : IDalamudPlugin
+    private const string PluginName = "AutoRepairPlugin";
+    private readonly DalamudPluginInterface pluginInterface;
+    private readonly ClientState clientState;
+    private readonly GameGui gameGui;
+    private readonly Lua lua;
+    private readonly uint repairThreshold = 50;  // Default repair threshold (percent)
+    private readonly uint darkMatterID = 33917;  // Dark Matter 8 item ID
+
+    private bool isRunning;
+
+    public AutoRepairPlugin(DalamudPluginInterface pluginInterface, ClientState clientState, GameGui gameGui, Lua lua)
     {
-        private readonly DalamudPluginInterface pluginInterface;
-        private readonly ChatGui chat;
-        private readonly ClientState clientState;
+        this.pluginInterface = pluginInterface;
+        this.clientState = clientState;
+        this.gameGui = gameGui;
+        this.lua = lua;
+        this.isRunning = false;
+    }
 
-        private readonly PluginCommandManager<Plugin> commandManager;
-        private readonly Configuration config;
-        private readonly WindowSystem windowSystem;
+    // Initialize the plugin (called on plugin load)
+    public void Initialize()
+    {
+        PluginLog.Information($"[{PluginName}] Initialized.");
+    }
 
-        public string Name => "Your Plugin's Display Name";
+    // Clean up when the plugin is unloaded
+    public void Dispose()
+    {
+        PluginLog.Information($"[{PluginName}] Disposed.");
+    }
 
-        public Plugin(
-            DalamudPluginInterface pi,
-            CommandManager commands,
-            ChatGui chat,
-            ClientState clientState)
+    // Start the autorepair loop
+    public void StartAutoRepairLoop()
+    {
+        if (isRunning)
         {
-            this.pluginInterface = pi;
-            this.chat = chat;
-            this.clientState = clientState;
+            PluginLog.Information($"[{PluginName}] AutoRepair loop already running.");
+            return;
+        }
 
-            // Get or create a configuration object
-            this.config = (Configuration)this.pluginInterface.GetPluginConfig()
-                          ?? this.pluginInterface.Create<Configuration>();
+        isRunning = true;
+        Task.Run(() => AutoRepairLoop());
+    }
 
-            // Initialize the UI
-            this.windowSystem = new WindowSystem(typeof(Plugin).AssemblyQualifiedName);
+    // Stop the autorepair loop
+    public void StopAutoRepairLoop()
+    {
+        isRunning = false;
+        PluginLog.Information($"[{PluginName}] AutoRepair loop stopped.");
+    }
 
-            var window = this.pluginInterface.Create<PluginWindow>();
-            if (window is not null)
+    // The autorepair loop that runs continuously in the background
+    private async Task AutoRepairLoop()
+    {
+        while (isRunning)
+        {
+            // Wait for a while before checking the durability again
+            await Task.Delay(5000);  // Delay in milliseconds (5 seconds)
+
+            if (NeedsRepair(repairThreshold))
             {
-                this.windowSystem.AddWindow(window);
+                await RepairGear();
+            }
+        }
+    }
+
+    // Function to check if any gear needs repair based on the threshold
+    private bool NeedsRepair(uint threshold)
+    {
+        var inventory = Dalamud.GameData.GetInventory();
+        
+        foreach (var slot in inventory)
+        {
+            if (slot?.Item?.Durability != null)
+            {
+                var durabilityPercent = (float)slot.Item.Durability / slot.Item.MaxDurability * 100;
+                if (durabilityPercent < threshold)
+                {
+                    PluginLog.Information($"Item {slot.Item.Name} needs repair (Durability: {durabilityPercent}%).");
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // Function to trigger repair
+    private async Task RepairGear()
+    {
+        if (IsInZone(129)) // Check if we are in Limsa Lominsa Lower Decks
+        {
+            PluginLog.Information($"[{PluginName}] Repairing gear...");
+            var darkMatterCount = GetItemCount(darkMatterID);
+            if (darkMatterCount > 0)
+            {
+                PluginLog.Information($"Using Dark Matter 8 for repair.");
+                await UseDarkMatterRepair();
+            }
+            else
+            {
+                PluginLog.Information($"No Dark Matter 8 available, attempting repair at NPC.");
+                await RepairAtNPC();
+            }
+        }
+        else
+        {
+            PluginLog.Information($"[{PluginName}] Not in Limsa Lominsa Lower Decks, teleporting...");
+            TeleportTo("Limsa Lominsa Lower Decks");
+        }
+    }
+
+    // Function to repair using Dark Matter 8
+    private async Task UseDarkMatterRepair()
+    {
+        // Your logic for Dark Matter repair goes here
+        PluginLog.Information($"Using Dark Matter 8 to repair gear.");
+        await Task.Delay(1000);  // Simulate a delay for using dark matter
+    }
+
+    // Function to repair at an NPC (e.g., Alistair in Limsa Lominsa Lower Decks)
+    private async Task RepairAtNPC()
+    {
+        // NPC's position for repair
+        var repairNPC = new { npcName = "Alistair", x = -246.87f, y = 16.19f, z = 49.83f };
+
+        if (GetDistanceToPoint(repairNPC.x, repairNPC.y, repairNPC.z) > 5)
+        {
+            // Move to the NPC if not close
+            await MoveToPoint(repairNPC.x, repairNPC.y, repairNPC.z);
+        }
+        else
+        {
+            if (!HasTarget() || GetTargetName() != repairNPC.npcName)
+            {
+                TargetNPC(repairNPC.npcName);
             }
 
-            this.pluginInterface.UiBuilder.Draw += this.windowSystem.Draw;
-
-            // Load all of our commands
-            this.commandManager = new PluginCommandManager<Plugin>(this, commands);
+            await InteractWithNPC();
         }
+    }
 
-        [Command("/example1")]
-        [HelpMessage("Example help message.")]
-        public void ExampleCommand1(string command, string args)
+    // Helper method to interact with an NPC
+    private async Task InteractWithNPC()
+    {
+        if (!GetCharacterCondition(CharacterCondition.occupiedInQuestEvent))
         {
-            // You may want to assign these references to private variables for convenience.
-            // Keep in mind that the local player does not exist until after logging in.
-            var world = this.clientState.LocalPlayer?.CurrentWorld.GameData;
-            this.chat.Print($"Hello, {world?.Name}!");
-            PluginLog.Log("Message sent successfully.");
+            // Interact with NPC
+            await ExecuteCommand("/interact");
         }
+    }
 
-        #region IDisposable Support
-        protected virtual void Dispose(bool disposing)
+    // Function to move to a specific point (use pathfinding)
+    private async Task MoveToPoint(float x, float y, float z)
+    {
+        while (GetDistanceToPoint(x, y, z) > 5)
         {
-            if (!disposing) return;
-
-            this.commandManager.Dispose();
-
-            this.pluginInterface.SavePluginConfig(this.config);
-
-            this.pluginInterface.UiBuilder.Draw -= this.windowSystem.Draw;
-            this.windowSystem.RemoveAllWindows();
+            if (!PathfindInProgress() && !PathIsRunning())
+            {
+                // Move to the target point
+                PathfindAndMoveTo(x, y, z);
+            }
+            await Task.Delay(500);  // Wait a moment before checking the distance again
         }
+    }
 
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-        #endregion
+    // Utility function to check if the player is in a specific zone
+    private bool IsInZone(uint zoneId)
+    {
+        return clientState.TerritoryType == zoneId;
+    }
+
+    // Utility function to teleport to a specific location
+    private void TeleportTo(string locationName)
+    {
+        ExecuteCommand($"/teleport {locationName}");
+    }
+
+    // Helper function to execute a command
+    private void ExecuteCommand(string command)
+    {
+        lua.RunString(command);
+    }
+
+    // Helper function to get the count of a specific item in the inventory
+    private int GetItemCount(uint itemId)
+    {
+        var inventory = Dalamud.GameData.GetInventory();
+        var item = inventory.FirstOrDefault(slot => slot?.Item?.Id == itemId);
+        return item != null ? 1 : 0;
+    }
+
+    // Helper function to check if we have a target
+    private bool HasTarget()
+    {
+        return clientState.Target != null;
+    }
+
+    // Helper function to get the target name
+    private string GetTargetName()
+    {
+        return clientState.Target?.Name;
+    }
+
+    // Helper function to check the distance to a point
+    private float GetDistanceToPoint(float x, float y, float z)
+    {
+        return (float)Math.Sqrt(Math.Pow(clientState.LocalPlayer.Position.X - x, 2) +
+                                Math.Pow(clientState.LocalPlayer.Position.Y - y, 2) +
+                                Math.Pow(clientState.LocalPlayer.Position.Z - z, 2));
+    }
+
+    // Helper function to check if pathfinding is running
+    private bool PathfindInProgress()
+    {
+        return false;  // Add pathfinding checks here as needed
+    }
+
+    // Helper function to check if a path is running
+    private bool PathIsRunning()
+    {
+        return false;  // Add pathrunning checks here as needed
+    }
+
+    // Helper function to initiate pathfinding and moving to the target point
+    private void PathfindAndMoveTo(float x, float y, float z)
+    {
+        // Add pathfinding logic here (may require additional Dalamud API calls)
     }
 }
